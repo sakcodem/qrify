@@ -1,0 +1,8 @@
+RewriteEngine On
+
+# Si existe un archivo o carpeta física (imágenes, CSS, etc.), cargarlo directamente
+RewriteCond %{REQUEST_FILENAME} !-f
+RewriteCond %{REQUEST_FILENAME} !-d
+
+# Redirigir todas las demás peticiones al Front Controller index.php
+RewriteRule ^(.*)$ index.php?route=$1 [L,QSA]
