@@ -1,5 +1,6 @@
 <?php
 session_start();
+require_once __DIR__ . '/config/App.php';
 
 // CARGAR LIBRERÍAS DE COMPOSER (Endroid, Dompdf, etc.)
 if (file_exists(__DIR__ . '/vendor/autoload.php')) {
@@ -28,6 +29,7 @@ spl_autoload_register(function ($class) {
 
 use Controllers\AuthController;
 use Controllers\AdminController;
+use Controllers\SuperAdminController;
 use Controllers\RedirectController;
 
 $route = $_GET['route'] ?? '';
@@ -36,6 +38,15 @@ $route = rtrim($route, '/');
 // Enrutador Front Controller
 switch ($route) {
     case '':
+    case 'home':
+           require_once __DIR__ . '/home.php';
+        break;
+    case 'terminos':
+        require_once __DIR__ . '/terminos.php';
+        break;
+    case 'privacidad':
+        require_once __DIR__ . '/privacidad.php'; 
+         break;
     case 'login':
         $controller = new AuthController();
         if ($_SERVER['REQUEST_METHOD'] === 'POST') {
@@ -59,15 +70,47 @@ switch ($route) {
         $controller = new AdminController();
         $controller->save();
         break;
-
     case 'admin-pdf':
         $controller = new AdminController();
         $controller->generatePdf();
         break;
-
+    case 'admin-png':
+        $controller = new AdminController();
+        $controller->generatePng();
+        break;
     case 'admin-delete':
         $controller = new AdminController();
         $controller->delete();
+        break;
+    case 'superadmin':
+        $controller = new SuperAdminController();
+        $controller->index();
+        break;
+    case 'superadmin/users':
+        $controller = new SuperAdminController();
+        $controller->users();
+        break;
+    case 'superadmin/save-user':
+        $controller = new SuperAdminController();
+        if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+            $controller->saveUser();
+        } else {
+            http_response_code(404);
+            require_once BASE_PATH . 'views/errors/error.php';
+        }
+        break;
+
+    case 'superadmin/get-user':
+        (new SuperAdminController())->getUserJson();
+        break;
+
+    case 'superadmin/update-user':
+        (new SuperAdminController())->updateUser();
+        break;
+
+    case 'superadmin/qrs':
+        $controller = new SuperAdminController();
+        $controller->qrs();
         break;
 
     default:
@@ -76,3 +119,4 @@ switch ($route) {
         $controller->handleRedirect($route);
         break;
 }
+?>
