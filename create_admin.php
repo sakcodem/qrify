@@ -15,20 +15,18 @@ spl_autoload_register(function ($class) {
 use Config\Database;
 
 // DATOS DEL NUEVO ADMINISTRADOR (Modifícalos según tus preferencias)
-$username = 'saul';
-$password = 'saul123';
+$username = '';
+$password = '';
 
 try {
     $db = Database::getConnection();
-
-    // 1. Encriptar la contraseña con el algoritmo bcrypt
+    
     $passwordHash = password_hash($password, PASSWORD_BCRYPT);
 
-    // 2. Insertar el usuario en la base de datos
-    $stmt = $db->prepare("INSERT INTO users (username, password_hash) VALUES (:username, :password_hash)");
+    $stmt = $db->prepare("INSERT INTO users (username, password) VALUES (:username, :password)");
     $stmt->execute([
         'username'      => $username,
-        'password_hash' => $passwordHash
+        'password' => $passwordHash
     ]);
 
     echo "<div style='font-family: system-ui; padding: 20px; background: #e6fffa; border: 1px solid #38b2ac; border-radius: 8px; max-width: 500px; margin: 40px auto;'>";
