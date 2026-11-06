@@ -12,7 +12,7 @@ $host = $_SERVER['HTTP_HOST'];
 // Detectar si estamos trabajando en Localhost o en Producción
 if ($host === 'localhost' || $host === '127.0.0.1') {
     // Entorno Local (Laragon)
-    define('BASE_URL', $protocol . $host . '/bodebase/public/');
+    define('BASE_URL', $protocol . $host . '/qrify/');
 } else {
     // Entorno de Producción (Servidor Real)
     define('BASE_URL', $protocol . $host . '/');
