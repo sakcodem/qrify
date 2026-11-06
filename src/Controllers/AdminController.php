@@ -2,58 +2,84 @@
 namespace Controllers;
 
 use Models\QrCode as QrCodeModel;
+use Controllers\AuthController as AuthController;
 use Endroid\QrCode\QrCode;
 use Endroid\QrCode\Writer\PngWriter;
 use Endroid\QrCode\Encoding\Encoding;
 use Endroid\QrCode\ErrorCorrectionLevel;
 use Dompdf\Dompdf;
 use Dompdf\Options;
+use Endroid\QrCode\Color\Color;
 
 require_once __DIR__ . '/../../config/App.php';
+require_once __DIR__ . '/../../config.local.php';
 
 class AdminController
 {
+    private $userId;
     public function __construct()
     {
-        if (!isset($_SESSION['user_id'])) {
-            header("Location: login");
+        $authController = new AuthController();
+        $authController->authCheck();
+
+        //Si está logueado pero NO es un cliente ('admin'), bloquear acceso
+        if ($_SESSION['role'] !== 'admin') {
+            http_response_code(404);
+            require_once BASE_PATH . 'views/errors/error.php';
             exit();
         }
+
+        $this->userId = $_SESSION['user_id'];
     }
 
     public function index()
     {
         $edit_id = $_GET['edit'] ?? null;
-        $edit_qr = $edit_id ? QrCodeModel::findById($edit_id) : null;
-        $qrs = QrCodeModel::getAllWithScans();
+        $edit_qr = $edit_id ? QrCodeModel::findByIdAndUser($edit_id, $this->userId) : null;
+        if ($edit_id && !$edit_qr) {
+            $_SESSION['error'] = "El recurso no existe.";
+            header("Location: admin");
+            exit();
+        }
+        $qrs = QrCodeModel::getAllWithScans($this->userId);
 
-        require_once __DIR__ . '/../../views/admin/index.php';
+        require_once BASE_PATH . 'views/admin/index.php';
     }
 
     public function save()
     {
         $id = $_POST['id'] ?? null;
-        $code = trim($_POST['code']);
-        $client_name = trim($_POST['client_name']);
-        $target_url = trim($_POST['target_url']);
+        $client_name = trim($_POST['client_name'] ?? '');
+        $target_url = trim($_POST['target_url'] ?? '');
+        $color_foreground = $_POST['color_foreground'] ?? '#FFFFFF';
+        $color_background = $_POST['color_background'] ?? '#000000';
+        $color_text = $_POST['color_text'] ?? '#FFFFFF';
 
-        // Autogenerar código si viene vacío
-        if (empty($code)) {
-            $code = QrCodeModel::generateNextCode();
-        }
-
-        // Validar que el código sea único
-        if (QrCodeModel::existsCode($code, $id)) {
-            // Redirige o muestra error si el código ya existe
-            $_SESSION['error'] = "El código '$code' ya está en uso. Por favor elige otro.";
+        // Validación básica: la URL de destino es obligatoria
+        if (empty($target_url)) {
+            $_SESSION['error'] = "La URL de destino no puede estar vacía.";
             header("Location: admin" . ($id ? "?edit=$id" : ""));
             exit();
         }
 
         if ($id) {
-            QrCodeModel::update($id, $code, $client_name, $target_url);
+            // Al EDITAR: Buscamos el QR primero para asegurarnos de que le pertenece al usuario
+            $existingQr = QrCodeModel::findByIdAndUser($id, $this->userId);
+
+            if (!$existingQr) {
+                $_SESSION['error'] = "El recurso no existe.";
+                header("Location: admin");
+                exit();
+            }
+
+            // Actualizamos manteniendo el mismo $code que ya tenía
+            QrCodeModel::update($id, $this->userId, $existingQr['code'], $client_name, $target_url, $color_foreground, $color_background, $color_text);
+            $_SESSION['success'] = "El recurso ha sido actualizado.";
         } else {
-            QrCodeModel::create($code, $client_name, $target_url);
+            // Al CREAR: El modelo se encarga de generar el código aleatorio y único
+            $code = QrCodeModel::generateRandomCode();
+            QrCodeModel::create($code, $this->userId, $client_name, $target_url, $color_foreground, $color_background, $color_text);
+            $_SESSION['success'] = "El recurso ha sido creado.";
         }
 
         header("Location: admin");
@@ -61,11 +87,12 @@ class AdminController
     }
 
 
+
     public function delete()
     {
-        $id = $_GET['delete'] ?? null;
-        if ($id) {
-            QrCodeModel::delete($id);
+        $qrId = $_GET['delete'] ?? null;
+        if ($qrId) {
+            QrCodeModel::deleteByIdAndUser($qrId, $this->userId);
         }
         header("Location: admin");
         exit();
@@ -157,19 +184,180 @@ class AdminController
         $dompdf->render();
 
         // 5. Emitir el PDF directamente hacia el cliente
-        date_default_timezone_set('America/Merida');
+        date_default_timezone_set(TIMEZONE);
 
-        $fechaActual = date('Y-m-d');
+        $fechaActual = date('Ymd-His');
         $nombrePdf = "qrs-impresion-{$fechaActual}.pdf";
 
         header('Content-Type: application/pdf');
         header('Content-Disposition: attachment; filename="' . $nombrePdf . '"');
         header('Content-Length: ' . strlen($dompdf->output()));
 
-        header('Access-Control-Expose-Headers: X-Filename'); // Permite que JavaScript lea esta cabecera
+        header('Access-Control-Expose-Headers: X-Filename');
         header('X-Filename: ' . $nombrePdf);
 
         echo $dompdf->output();
+        exit();
+    }
+
+    private static function hexToRgb($hex)
+    {
+        $hex = ltrim($hex, '#');
+        if (strlen($hex) == 3) {
+            $hex = $hex[0] . $hex[0] . $hex[1] . $hex[1] . $hex[2] . $hex[2];
+        }
+        return array_map('hexdec', str_split($hex, 2));
+    }
+
+    public static function generatePng()
+    {
+        $fontPath = BASE_PATH . 'assets/fonts/Roboto-Regular.ttf';
+        $input = json_decode(file_get_contents('php://input'), true);
+        $ids = $input['qr_ids'] ?? [];
+
+        if (empty($ids)) {
+            http_response_code(400);
+            echo json_encode(['error' => 'No se seleccionaron QRs']);
+            exit();
+        }
+
+        $qrs = QrCodeModel::findByIds($ids);
+
+        $protocol = isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] === 'on' ? 'https' : 'http';
+        $baseUrl = $protocol . "://" . $_SERVER['HTTP_HOST'];
+
+        $writer = new PngWriter();
+        $tempDir = __DIR__ . '/../../temp_qrs/';
+
+        if (!file_exists($tempDir)) {
+            mkdir($tempDir, 0777, true);
+        }
+
+        $generatedFiles = [];
+
+        foreach ($qrs as $qr) {
+            $url = $baseUrl . "/" . $qr['code'];
+            $codeText = $qr['code'];
+            $rgbFore = self::hexToRgb($qr['color_foreground'] ?? '#FFFFFF');
+            $rgbBack = self::hexToRgb($qr['color_background'] ?? '#000000');
+            $rgbText = self::hexToRgb($qr['color_text'] ?? '#FFFFFF');
+
+            // Generar QR con Endroid
+            $qrCode = new QrCode(
+                data: $url,
+                encoding: new Encoding('UTF-8'),
+                errorCorrectionLevel: ErrorCorrectionLevel::Medium,
+                //Ancho y alto en píxeles
+                size: 500,
+                //Espacio en blanco alrededor del QR interno
+                margin: 5,
+                //COLOR DE LOS PUNTOS (Foreground): Color RGB (Negro por defecto)
+                foregroundColor: new Color($rgbFore[0], $rgbFore[1], $rgbFore[2]),
+                //COLOR DE FONDO (Background): Color RGB (Blanco por defecto)
+                backgroundColor: new Color($rgbBack[0], $rgbBack[1], $rgbBack[2])
+
+            );
+            $result = $writer->write($qrCode);
+            $qrImageBinary = $result->getString();
+
+            // Procesar con GD para poner la leyenda abajo
+            $qrImage = imagecreatefromstring($qrImageBinary);
+            $qrWidth = imagesx($qrImage);
+            $qrHeight = imagesy($qrImage);
+
+            $padding = 1;// Margen exterior alrededor de toda la etiqueta combinada
+            $footerHeight = 40;// Altura del espacio inferior reservado para la leyenda de texto
+            $finalWidth = $qrWidth + ($padding * 2);
+            $finalHeight = $qrHeight + $footerHeight + $padding;
+
+            $finalImage = imagecreatetruecolor($finalWidth, $finalHeight);
+            $white = imagecolorallocate($finalImage, 255, 255, 255);
+            $black = imagecolorallocate($finalImage, 0, 0, 0);
+            $colorRectangle = imagecolorallocate($finalImage, $rgbBack[0], $rgbBack[1], $rgbBack[2]);
+            imagefilledrectangle($finalImage, 0, 0, $finalWidth, $finalHeight, $colorRectangle);
+            $textColorId = imagecolorallocate($finalImage, $rgbText[0], $rgbText[1], $rgbText[2]);
+
+            imagecopy($finalImage, $qrImage, $padding, $padding, 0, 0, $qrWidth, $qrHeight);
+
+            $fontSize = 30;
+            // 3. Calcular el ancho y alto exacto que ocupará el texto con esa fuente
+            $bbox = imagettfbbox($fontSize, 0, $fontPath, $codeText);
+            $textWidth = abs($bbox[4] - $bbox[0]);
+            $textHeight = abs($bbox[5] - $bbox[1]);
+
+            // 4. Calcular la posición para centrar el texto debajo del QR
+            $textX = ($finalWidth - $textWidth) / 2;
+            $textY = $qrHeight + $padding + 30; // Ajusta este valor si necesitas más separación vertical
+
+            // 5. Dibujar el texto en la imagen usando la fuente TTF
+            imagettftext(
+                $finalImage,  // El lienzo de la imagen
+                $fontSize,    // Tamaño de la letra libre
+                0,            // Ángulo de rotación (0 para texto horizontal normal)
+                $textX,       // Posición horizontal centrada
+                $textY,       // Posición vertical
+                $textColorId, // Color del texto
+                $fontPath,    // Ruta al archivo .ttf
+                $codeText     // El texto del código (ej: skm-0001)
+            );
+
+            $fileName = "qr-" . $codeText . ".png";
+            $filePath = $tempDir . $fileName;
+            imagepng($finalImage, $filePath);
+
+            imagedestroy($qrImage);
+            imagedestroy($finalImage);
+
+            $generatedFiles[] = $filePath;
+        }
+
+        // CASO 1: Solo 1 QR seleccionado -> Descargar PNG directo
+        if (count($generatedFiles) === 1) {
+            $fileToDownload = $generatedFiles[0];
+            $fileName = basename($fileToDownload);
+
+            // Limpiar cualquier búfer previo para evitar corrupción del archivo
+            if (ob_get_level()) {
+                ob_end_clean();
+            }
+
+            header('Content-Type: image/png');
+            header('Content-Disposition: attachment; filename="' . $fileName . '"');
+            header('Access-Control-Expose-Headers: Content-Disposition');
+            header('Content-Length: ' . filesize($fileToDownload));
+            readfile($fileToDownload);
+            unlink($fileToDownload);
+            exit();
+        }
+
+        // CASO 2: Múltiples QRs -> Empaquetar en ZIP
+        date_default_timezone_set(TIMEZONE);
+        $fechaActual = date('Ymd-His');
+        $zipName = "qr-codes-export-" . $fechaActual . ".zip";
+        $zipPath = $tempDir . $zipName;
+
+        $zip = new \ZipArchive();
+        if ($zip->open($zipPath, \ZipArchive::CREATE | \ZipArchive::OVERWRITE) === TRUE) {
+            foreach ($generatedFiles as $file) {
+                $zip->addFile($file, basename($file));
+            }
+            $zip->close();
+        }
+
+        // Limpiar cualquier búfer previo para evitar corrupción del archivo
+        if (ob_get_level()) {
+            ob_end_clean();
+        }
+
+        header('Content-Type: application/zip');
+        header('Content-Disposition: attachment; filename="' . $zipName . '"');
+        header('Content-Length: ' . filesize($zipPath));
+        readfile($zipPath);
+
+        foreach ($generatedFiles as $file) {
+            @unlink($file);
+        }
+        @unlink($zipPath);
         exit();
     }
 }
